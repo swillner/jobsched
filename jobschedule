@@ -1,0 +1,6 @@
+#!/usr/bin/env python3
+from jobsched.cli import main
+from jobsched.parameters import ParameterValues  # needed for shelve
+
+if __name__ == "__main__":
+    main()
