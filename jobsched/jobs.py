@@ -285,7 +285,7 @@ class Job:
         self.variables.update(k for k in missing if k[0] != SPECIAL_PARAM_PREFIX)
 
         if not "_provenance_ncatted" in self.parameters:
-            pro = "ncatted -h -O -a history,global,jobdesc"
+            pro = "ncatted -h -O -a history,global,d,,"
             for k, v in get_setting(settings, "provenance_variables", {}).items():
                 _, missing = render(v, self.parameters, output_missing=True)
                 if not missing - self.variables:  # no variable unused by this job
