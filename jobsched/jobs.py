@@ -18,6 +18,7 @@
 import hashlib
 import itertools
 import os
+import re
 import subprocess
 from copy import deepcopy
 
@@ -27,6 +28,14 @@ from .executors import Executor
 from .helpers import deepupdate, ensure_abspath, get_setting
 from .parameters import ParameterCombinations, ParameterValues
 from .templates import render
+
+try:
+    import pyslurm
+
+    USE_PYSLURM = True
+except ImportError:
+    print("WARNING: Not using pyslurm")
+    USE_PYSLURM = False
 
 VALID_JOB_PROPERTIES = [
     "code",
@@ -64,33 +73,74 @@ class JobState:
     RUNNING = 3
 
 
-def get_run_state(run_id: int):
+SLURM_JOB_STATE_IDS = {
+    0: JobState.WAITING,  # JOB_PENDING
+    1: JobState.RUNNING,  # JOB_RUNNING
+    2: JobState.WAITING,  # JOB_SUSPENDED
+    3: JobState.DONE,  # JOB_COMPLETE
+    4: JobState.FAILED,  # JOB_CANCELLED
+    5: JobState.FAILED,  # JOB_FAILED
+    6: JobState.FAILED,  # JOB_TIMEOUT
+    7: JobState.FAILED,  # JOB_NODE_FAIL
+    8: JobState.WAITING,  # JOB_PREEMPTED
+    10: JobState.FAILED,  # JOB_BOOT_FAIL
+}
+
+def get_run_state(run_id: str):
+    run_id = run_id.strip()
     if run_id == "local":
         return JobState.DONE
+
+    if USE_PYSLURM:
+        res = pyslurm.slurmdb_jobs().get(jobids=[run_id])[int(run_id)]["state"]
+        return SLURM_JOB_STATE_IDS[res]
+
     while True:
         p = subprocess.Popen(
             ["sacct", "-j", str(run_id), "-nP", "-o", "state"], stdout=subprocess.PIPE
         )
-        res = p.stdout.read().decode("utf8")
+        res = p.stdout.read().decode("utf8").split("\n")[0].strip()
         if not p.wait():
             break
         input("Press enter...")
     if not res:  # waiting array
         return JobState.WAITING
-    if res.startswith("PENDING"):
+    if res == "PENDING":
         return JobState.WAITING
-    if res.startswith("RUNNING"):
+    if res == "RUNNING":
         return JobState.RUNNING
     if (
-        res.startswith("FAILED")
-        or res.startswith("CANCELLED")
-        or res.startswith("TIMEOUT")
-        or res.startswith("OUT_OF_MEMORY")
+        res == "FAILED"
+        or res == "CANCELLED"
+        or res == "TIMEOUT"
+        or res == "OUT_OF_MEMORY"
     ):
         return JobState.FAILED
-    if res.startswith("COMPLETED"):
+    if res == "COMPLETED":
         return JobState.DONE
-    raise RuntimeError(f"Unknown job state {res}")
+    raise RuntimeError(f"Unknown job state '{res}'")
+
+
+def to_minutes(time_str: str):
+    m = re.match("([0-9]+)-([0-9][0-9]):([0-9][0-9]):([0-9][0-9])", time_str)
+    if m:
+        days = int(m.group(1))
+        hours = int(m.group(2))
+        minutes = int(m.group(3))
+        seconds = int(m.group(4))
+        return (1 if seconds > 0 else 0) + minutes + hours * 60 + days * 24 * 60
+    m = re.match("([0-9]?[0-9]):([0-9][0-9]):([0-9][0-9])", time_str)
+    if m:
+        hours = int(m.group(1))
+        minutes = int(m.group(2))
+        seconds = int(m.group(3))
+        return (1 if seconds > 0 else 0) + minutes + hours * 60
+    m = re.match("([0-9]?[0-9]):([0-9][0-9])", time_str)
+    if m:
+        minutes = int(m.group(1))
+        seconds = int(m.group(2))
+        return (1 if seconds > 0 else 0) + minutes
+    raise RuntimeError(f"Invalid time format '{time_str}'")
 
 
 def run_description(current, ignore=None):
@@ -281,7 +331,7 @@ class Job:
             dep_run_ids = ":".join(
                 sorted(
                     set(
-                        run_id.split("_")[0]
+                        run_id.split("_")[0].strip()
                         for run_id in dep_run_ids
                         if run_id != "local"
                     )
@@ -302,8 +352,8 @@ class Job:
             )
             output = "{}/%A-%a".format(get_setting(self.settings, "logdir"))
             array_str = "0-{}".format(len(parameters) - 1)
-            if "array_size" in self.settings:
-                array_str += "%{}".format(self.settings["array_size"])
+            # if "array_size" in self.settings:
+            #     array_str += "%{}".format(self.settings["array_size"])
             parameter_names = {}
             for p in [parameters, current]:
                 if p:
@@ -324,42 +374,54 @@ class Job:
             template_parameters.update(current)
             template_parameters.update(parameters)
 
-        slurm_header = """\
-#SBATCH --account={account}
-#SBATCH --acctg-freq=energy=0
-#SBATCH --begin=now+{delay}
-#SBATCH --constraint={constraint}
-#SBATCH --cpus-per-task={threads}
-#SBATCH --error={output}
-#SBATCH --export=ALL,OMP_PROC_BIND=FALSE,OMP_NUM_THREADS={threads}
-#SBATCH --job-name="{name}"
-#SBATCH --kill-on-invalid-dep=yes
-#SBATCH --mail-type={notify}
-#SBATCH --nice=0
-#SBATCH --nodes=1
-#SBATCH --ntasks=1
-#SBATCH --output={output}
-#SBATCH --partition={partition}
-#SBATCH --profile=none
-#SBATCH --qos={qos}
-#SBATCH --time={time}
-#SBATCH --workdir={workdir}
-{array}\
-""".format(
-            **{
-                "account": get_setting(self.settings, "account"),
-                "array": "#SBATCH --array={}\n".format(array_str) if array_str else "",
-                "constraint": self.scheduler.get("constraint", ""),  # e.g. broadwell
-                "delay": get_setting(self.settings, "delay", 0),
-                "name": name,
-                "notify": self.scheduler.get("notify", "NONE"),
-                "output": output,
-                "partition": self.scheduler.get("partition", "standard"),
-                "qos": self.scheduler.get("qos", "short"),
-                "threads": self.scheduler.get("threads", 1),
-                "time": self.scheduler.get("time", "1-00:00:00"),
-                "workdir": workdir,
-            }
+        slurm_options = {
+            "account": get_setting(self.settings, "account"),
+            "acctg-freq": "energy=0",
+            "array": array_str,
+            "constraint": self.scheduler.get("constraint", ""),  # e.g. broadwell
+            "cpus-per-task": self.scheduler.get("threads", 1),
+            "error": output,
+            "export": "ALL",
+            "job-name": name,
+            "kill-on-invalid-dep": "yes",
+            "mail-type": self.scheduler.get("notify", "NONE"),
+            "nice": 0,
+            "output": output,
+            "partition": self.scheduler.get("partition", "standard"),
+            "profile": "none",
+            "qos": self.scheduler.get("qos", "short"),
+            "time": self.scheduler.get("time", "1-00:00:00"),
+            "workdir": workdir,
+        }
+
+        pyslurm_options = {
+            "account": slurm_options["account"],
+            "acctg_freq": slurm_options["acctg-freq"],
+            "array_inx": slurm_options["array"],
+            "constraints": slurm_options["constraint"],
+            "dependency": "afterok:{}".format(dep_run_ids) if dep_run_ids else "",
+            "error": slurm_options["error"],
+            # "export_env": slurm_options["export"],
+            "job_flags": 1,  # KILL_INV_DEP
+            "job_name": slurm_options["job-name"],
+            "cpus_per_task": int(slurm_options["cpus-per-task"]),
+            "nice": int(slurm_options["nice"]),
+            "output": slurm_options["output"],
+            "partition": slurm_options["partition"],
+            "profile": 1,  # ACCT_GATHER_PROFILE_NONE
+            "qos": slurm_options["qos"],
+            "time_limit": int(to_minutes(slurm_options["time"])),
+            # TODO "hold": True,
+            # TODO "mail_type": slurm_options["mail-type"],
+        }
+
+        slurm_header = (
+            "\n".join(
+                "#SBATCH --{}='{}'".format(k, v)
+                for k, v in slurm_options.items()
+                if str(v)
+            )
+            + "\n"
         )
 
         template_parameters["_slurm_header"] = slurm_header
@@ -371,6 +433,10 @@ class Job:
 {dependencies}\
 {array}\
 echo "STARTING {name} @ $(date +'%FT%T')"
+
+export OMP_PROC_BIND=FALSE
+export OMP_NUM_THREADS={threads}
+cd "{workdir}"
 
 ret=$?
 if [[ $ret == 0 ]]
@@ -405,7 +471,7 @@ exit $ret
             **{
                 "array": array_cmd,
                 "code": self.code,
-                "dependencies": "#SBATCH --depend=afterok:{}\n".format(dep_run_ids)
+                "dependencies": "#SBATCH --depend='afterok:{}'\n".format(dep_run_ids)
                 if dep_run_ids
                 else "",
                 "epilog": self.epilog,
@@ -414,6 +480,8 @@ exit $ret
                 "name": name,
                 "prolog": self.prolog,
                 "slurm_header": slurm_header,
+                "threads": slurm_options["cpus-per-task"],
+                "workdir": workdir,
             }
         )
 
@@ -421,7 +489,11 @@ exit $ret
             cmd = render(cmd, template_parameters)
 
         run_id = self.executor.schedule(
-            name, len(parameters) if self.array else 1, cmd, workdir
+            name,
+            len(parameters) if self.array else 1,
+            cmd,
+            workdir,
+            pyslurm_options=pyslurm_options,
         )
         return run_id
 

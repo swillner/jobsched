@@ -21,6 +21,14 @@ import time
 
 from tqdm import tqdm
 
+try:
+    import pyslurm
+
+    USE_PYSLURM = True
+except ImportError:
+    print("WARNING: Not using pyslurm")
+    USE_PYSLURM = False
+
 
 def tprint(s=""):
     tqdm.write(s, file=sys.stderr)
@@ -44,7 +52,7 @@ class DebugExecutor(Executor):
     def open(self):
         pass
 
-    def schedule(self, name, run_count, cmd, workdir):
+    def schedule(self, name, run_count, cmd, workdir, **kwargs):
         self.scheduled_count += run_count
         tprint("Schedule {}".format(name))
         return f'"{name}"'
@@ -64,7 +72,7 @@ class DryExecutor(Executor):
     def open(self):
         pass
 
-    def schedule(self, name, run_count, cmd, workdir):
+    def schedule(self, name, run_count, cmd, workdir, **kwargs):
         self.scheduled_count += run_count
         tprint("\nSchedule {}".format(name))
         tprint(cmd)
@@ -86,9 +94,20 @@ class SlurmExecutor(Executor):
     def open(self):
         self.progressbar = tqdm(unit="j", desc="Scheduling")
 
-    def schedule(self, name, run_count, cmd, workdir):
+    def schedule(self, name, run_count, cmd, workdir, **kwargs):
         self.scheduled_count += run_count
         self.progressbar.update(run_count)
+
+        if USE_PYSLURM:
+            try:
+                options = kwargs["pyslurm_options"]
+                options["wrap"] = cmd
+                run_id = pyslurm.job().submit_batch_job(options)
+            except SystemExit as e:
+                if e.code:
+                    raise RuntimeError("Job submission failed")
+            return str(run_id)
+
         while True:
             p = subprocess.Popen(
                 ["sbatch", "--parsable"],
@@ -98,7 +117,7 @@ class SlurmExecutor(Executor):
             )
             p.stdin.write(bytes(cmd, "utf8"))
             p.stdin.close()
-            run_id = p.stdout.read().decode("utf8")
+            run_id = p.stdout.read().decode("utf8").strip()
             if not p.wait():
                 break
             input("Press enter...")
@@ -120,7 +139,7 @@ class LocalExecutor(Executor):
     def open(self):
         self.progressbar = tqdm(unit="j", desc="Running")
 
-    def schedule(self, name, run_count, cmd, workdir):
+    def schedule(self, name, run_count, cmd, workdir, **kwargs):
         self.scheduled_count += run_count
         self.progressbar.update(run_count)
         proc = subprocess.Popen(
