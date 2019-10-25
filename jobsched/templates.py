@@ -15,10 +15,12 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-import pystache
+import chevron
 
-renderer = pystache.Renderer(escape=lambda u: u, missing_tags="strict")
+chevron.renderer._html_escape = lambda n: n
 
+def eval_func(text, render):
+    return str(eval(render(text)))
 
 class _RenderFilter(dict):
     def __init__(self, *dicts, first_missing_value="", repeated_missing_value=""):
@@ -34,10 +36,8 @@ class _RenderFilter(dict):
             return dict.__getitem__(self, key)
         if key in self.missing:
             return self.repeated_missing_value.format(key)
-        if key[0] == "+":
-            return eval(
-                renderer.render(key[1:].replace("[[", "{{").replace("]]", "}}"), self)
-            )
+        if key == "_eval":
+            return eval_func
         self.missing.add(key)
         return self.first_missing_value.format(key)
 
@@ -63,7 +63,7 @@ class RenderError(RuntimeError):
 
 
 def render(
-    template,
+    text,
     *dicts,
     output_missing=False,
     first_missing_value="",
@@ -74,7 +74,10 @@ def render(
         first_missing_value=first_missing_value,
         repeated_missing_value=repeated_missing_value,
     )
-    text = renderer.render(template, render_filter)
+    last_text = ""
+    while text != last_text:
+        last_text = text
+        text = chevron.render(text, data=render_filter)
     if output_missing:
         return text, render_filter.missing
     if render_filter.missing:

@@ -485,8 +485,7 @@ exit $ret
             }
         )
 
-        for _ in range(2):
-            cmd = render(cmd, template_parameters)
+        cmd = render(cmd, template_parameters)
 
         run_id = self.executor.schedule(
             name,
