@@ -88,7 +88,7 @@ SLURM_JOB_STATE_IDS = {
 
 def get_run_state(run_id: str):
     run_id = run_id.strip()
-    if run_id == "local":
+    if run_id == "local" or run_id == "debug":
         return JobState.DONE
 
     if USE_PYSLURM:
@@ -169,6 +169,7 @@ class JobList:
         self.executor = executor
         self.former_runs = former_runs
         self.jobdescs = get_setting(self.settings, "jobs")
+        self.jobs = {}
 
     def get_jobdesc(self, jobname: str):
         if not jobname in self.jobdescs:
@@ -212,6 +213,8 @@ class JobList:
         seen.add(jobname)
 
     def _setup_job(self, jobname: str):
+        if jobname in self.jobs:
+            return self.jobs[jobname]
         jobdesc = self.get_jobdesc(jobname)
         dependencies = [
             (self._setup_job(s["job"]), s["foreach"])
@@ -222,9 +225,11 @@ class JobList:
         else:
             former_runs = {}
             self.former_runs[jobname] = former_runs
-        return Job(
+        job = Job(
             jobname, jobdesc, dependencies, self.settings, former_runs, self.executor
         )
+        self.jobs[jobname] = job
+        return job
 
 
 class Job:

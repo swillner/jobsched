@@ -55,7 +55,7 @@ class DebugExecutor(Executor):
     def schedule(self, name, run_count, cmd, workdir, **kwargs):
         self.scheduled_count += run_count
         tprint("Schedule {}".format(name))
-        return f'"{name}"'
+        return "debug"
 
 
 class DryExecutor(Executor):
@@ -142,6 +142,7 @@ class LocalExecutor(Executor):
     def schedule(self, name, run_count, cmd, workdir, **kwargs):
         self.scheduled_count += run_count
         self.progressbar.update(run_count)
+        print()
         proc = subprocess.Popen(
             ["bash", "-e"], stdin=subprocess.PIPE, bufsize=4096, cwd=workdir
         )

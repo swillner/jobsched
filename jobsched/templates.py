@@ -81,5 +81,5 @@ def render(
     if output_missing:
         return text, render_filter.missing
     if render_filter.missing:
-        raise RenderError(template, render_filter.missing, *dicts)
+        raise RenderError(text, render_filter.missing, *dicts)
     return text
