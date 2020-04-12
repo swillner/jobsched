@@ -84,6 +84,7 @@ SLURM_JOB_STATE_IDS = {
     7: JobState.FAILED,  # JOB_NODE_FAIL
     8: JobState.WAITING,  # JOB_PREEMPTED
     10: JobState.FAILED,  # JOB_BOOT_FAIL
+    11: JobState.FAILED, # Cancelled because of memory
 }
 
 def get_run_state(run_id: str):
@@ -580,8 +581,8 @@ exit $ret
             already_scheduled = c in self.former_runs or c in self.scheduled_runs
 
             if has_failed or forcestart or not already_scheduled:
-                if state != JobState.FAILED:
-                    self.init_run(c, parameters, workdir)
+                # if state != JobState.FAILED:
+                self.init_run(c, parameters, workdir)
                 dep_run_ids = []
                 for dep, foreach in self.dependencies:
                     dep_run_ids += dep.schedule_tree(
