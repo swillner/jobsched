@@ -23,13 +23,13 @@ import sys
 
 import pyaml
 from ruamel import yaml
-from snw.listpicker import pick
 from tqdm import tqdm
 
 from .executors import DebugExecutor, DryExecutor, LocalExecutor, SlurmExecutor, tprint
 from .helpers import ensure_abspath, get_setting
 from .jobs import JobList
 from .parameters import ParameterCombinations
+from .utils import can_use_pick, pick
 
 
 def load_runfile(filename):
@@ -94,8 +94,10 @@ def command_run(settings):
         js = sorted(settings["jobs"].keys())
         if len(js) == 1:
             job = js[0]
-        else:
+        elif can_use_pick:
             job = pick(js, js, "Job:")
+        else:
+            raise RuntimeError("Please specify a job")
     else:
         job = args.job
 
